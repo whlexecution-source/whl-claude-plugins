@@ -7,18 +7,12 @@
 | `whl-data` | `whl-setup` (checklist ตั้งค่าเครื่อง), `whl-workspace` (โครงโฟลเดอร์งานมาตรฐาน), `cloudviu-connector` (CloudViu job-records + attendance API), `gas-connect` (แก้ Apps Script ผ่าน Chrome) |
 
 ## ติดตั้ง (ผู้ใช้ทั่วไป)
-1. ขอสิทธิ์อ่าน repo นี้จากทีม Data (repo เป็น private)
-2. ให้เครื่องดึง repo ได้: ติดตั้ง GitHub CLI แล้วรันเองในเทอร์มินัล
-   ```
-   gh auth login
-   gh auth setup-git
-   ```
-3. ใน Claude Code พิมพ์
+1. ใน Claude Code พิมพ์ (repo เป็น public ไม่ต้อง login GitHub)
    ```
    /plugin marketplace add whlexecution-source/whl-claude-plugins
    /plugin install whl-data@whl-marketplace
    ```
-4. เริ่ม session ใหม่ แล้วพิมพ์ `/whl-data:whl-setup` (หรือบอก Claude ว่า "ตรวจการตั้งค่า WHL") - Claude จะตรวจทีละข้อและพาแก้
+2. เริ่ม session ใหม่ แล้วพิมพ์ `/whl-data:whl-setup` (หรือบอก Claude ว่า "ตรวจการตั้งค่า WHL") - Claude จะตรวจทีละข้อและพาแก้
 
 ## Checklist ที่ทุกคนต้องผ่าน
 - [ ] Workspace มาตรฐาน `~/WHL` (เปิด Claude Code ที่นี่เสมอ) - ดูโครงด้านล่าง
@@ -27,7 +21,7 @@
 - [ ] Google Drive connector (บัญชี @whitelineactivation.com)
 - [ ] Google Sheets connector (บัญชี @whitelineactivation.com)
 - [ ] Claude in Chrome extension + script.google.com เปิดด้วยบัญชีงาน (สำหรับ Apps Script)
-- [ ] (เฉพาะผู้พัฒนา) `gh auth status` ผ่าน
+- [ ] (เฉพาะผู้พัฒนาที่จะส่งงานแก้เข้า repo) `gh auth status` ผ่าน
 
 ## โครงโฟลเดอร์งานมาตรฐาน (เหมือนกันทุกคน)
 ```
@@ -65,5 +59,6 @@ plugin จะอัปเดตเมื่อเลข `version` ใน `plugin
 ## ความปลอดภัย
 - repo นี้ **ห้ามมี** รหัสผ่าน token cookie ข้อมูลลูกค้า หรือไฟล์ผลลัพธ์ (CSV/Excel) - ดู `.gitignore`
 - รหัส CloudViu อยู่ใน Credential Manager ของแต่ละเครื่อง / ข้อมูลบัญชีอยู่ที่ `~/.cloudviu/` ไม่อยู่ใน repo
+- repo นี้เป็น **public** - ทุกอย่างที่ push ขึ้นมาคนทั่วไปเห็น ห้ามมีชื่อลูกค้า เลขโปรเจกต์ลูกค้า หรือข้อมูลภายใน
 - ทุกการแก้ต้องผ่าน Pull Request และให้คนที่มีพื้นฐานเทคนิครีวิวก่อน merge
 - ควรให้ทีม IT ตรวจสอบก่อนใช้งานจริง
