@@ -1,0 +1,9 @@
+{
+  "_note": "คัดลอกไปเป็น .claude/skills/cloudviu-<project>/project.json แล้วแก้ค่า - ห้ามใส่เบอร์/รหัสผ่านในไฟล์นี้",
+  "project": "ชื่อสั้นภาษาอังกฤษ ตัวเล็ก เช่น brand-a (ใช้เป็นชื่อโฟลเดอร์ ชื่อไฟล์ผลลัพธ์ และชื่อบัญชีใน Credential Manager)",
+  "display_name": "ชื่อโปรเจกต์ที่เห็นใน CloudViu",
+  "organization_id": 0,
+  "project_id": 0,
+  "jobs": [],
+  "jobs_note": "เลข job ที่จะดึง (ดูจาก URL ปุ่ม Export: job-record-download?jobIds=...)"
+}

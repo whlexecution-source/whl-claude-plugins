@@ -1,0 +1,14 @@
+{
+  "name": "whl-marketplace",
+  "description": "Whiteline Activation - ปลั๊กอิน Claude Code ภายในองค์กร (ข้อมูล CloudViu, Google Workspace, Apps Script)",
+  "owner": { "name": "Whiteline Activation Data Team" },
+  "plugins": [
+    {
+      "name": "whl-data",
+      "source": "./plugins/whl-data",
+      "description": "เชื่อม CloudViu (job-records + attendance API), Google Sheets/Drive และ Apps Script พร้อม checklist ตั้งค่าเครื่อง",
+      "category": "data",
+      "tags": ["cloudviu", "google-workspace", "apps-script", "onboarding"]
+    }
+  ]
+}

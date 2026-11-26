@@ -1,0 +1,19 @@
+# ข้อมูล / ผลลัพธ์ - ห้ามเข้า repo
+out/
+*.csv
+*.xlsx
+*.xls
+*.json.bak
+.cloudviu/
+accounts.json
+
+# รหัส / env
+.env
+.env.*
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.pyc
+.venv/
