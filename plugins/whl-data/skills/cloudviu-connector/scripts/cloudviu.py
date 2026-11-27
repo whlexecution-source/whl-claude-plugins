@@ -46,7 +46,7 @@ BASE = "https://app.cloudviu.co"
 #   loader   GET  <path>.data?<params>     -> turbo-stream {<route id>: {data: <ข้อมูลของ route นั้น>}, ...}
 #   session หมด -> 202 + SingleFetchRedirect {redirect:'/login'}
 #   export   GET  /job-record-download?... (resource route ไม่เปลี่ยน)
-CONNECTOR_VERSION = "2.1.0"   # 2.1.0: --account (~/.cloudviu), login+scan, records (job-records API), doctor / 2.0.0: React Router v7 (.data + turbo-stream) / 1.2.0: setup ก่อนรู้ organization_id
+CONNECTOR_VERSION = "2.2.0"   # 2.2.0: profile + ตรวจความผิดปกติหลังดึง / 2.1.0: --account (~/.cloudviu), login+scan, records (job-records API), doctor / 2.0.0: React Router v7 (.data + turbo-stream) / 1.2.0: setup ก่อนรู้ organization_id
 
 SKILLS_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 REPO_ROOT = os.path.abspath(os.path.join(SKILLS_DIR, "..", ".."))
@@ -961,6 +961,8 @@ def cmd_attendance(args):
     if dropped:
         print("ตัดทิ้ง (ข้อมูลส่วนบุคคล/รูป): " + ", ".join(sorted(dropped)))
     print(f"\nเขียนไฟล์: {path_out}")
+    if not getattr(args, "no_check", False):
+        check_attendance(flat, dt.date.fromisoformat(args.start), dt.date.fromisoformat(args.end))
     if args.include_names or args.include_photos:
         print("!! ไฟล์นี้มีข้อมูลส่วนบุคคล - เก็บในที่ปลอดภัย อย่าส่งต่อโดยไม่ได้รับอนุมัติ")
 
@@ -1029,24 +1031,22 @@ def record_rows(rec, itemmap, products, include_names, include_photos):
     return rows
 
 
-def cmd_records(args):
-    start, end = dt.date.fromisoformat(args.start), dt.date.fromisoformat(args.end)
-    if end < start:
-        die("--from ต้องไม่เกิน --to")
-    if (end - start).days + 1 > MAX_RANGE_DAYS:
-        die(f"ช่วงวันที่เกิน {MAX_RANGE_DAYS} วัน - แบ่งดึงเป็นหลายครั้ง")
-    s = login()
-    last = min(end + dt.timedelta(days=args.pad), dt.date.today())
-    jobs = args.jobs or [None]
+STATS_DIR = os.path.join(USER_DIR, "stats")
+PROFILES_DIR = os.path.join(USER_DIR, "profiles")
+
+
+def fetch_records(s, start, end, jobs=None, campaign=None, pad=3, quiet=False):
+    """job-records ทีละวัน start..end+pad (API กรองตามเวลาส่ง) แล้วเก็บเฉพาะ record.date ใน start..end"""
+    last = min(end + dt.timedelta(days=pad), dt.date.today())
     recs, itemmap, products, days = {}, {}, {}, 0
     day = start
     while day <= last:
-        for job in jobs:
+        for job in jobs or [None]:
             params = {"startAt": day.isoformat(), "endAt": day.isoformat()}
             if job:
                 params["jobId"] = job
-            if args.campaign:
-                params["campaignName"] = args.campaign
+            if campaign:
+                params["campaignName"] = campaign
             d = fetch_json(s, "/job-records", ROUTE_RECORDS, params)
             blk = d.get("data") or {}
             if not isinstance(blk.get("records"), list):
@@ -1059,7 +1059,134 @@ def cmd_records(args):
             time.sleep(PAUSE_SEC / 2)
         days += 1
         day += dt.timedelta(days=1)
-    print(f"ขอข้อมูล {days} วัน ({start}..{last}) ได้ {len(recs)} records ที่ date อยู่ใน {start}..{end}")
+    if not quiet:
+        print(f"ขอข้อมูล {days} วัน ({start}..{last}) ได้ {len(recs)} records ที่ date อยู่ใน {start}..{end}")
+    return recs, itemmap, products
+
+
+def _num(v):
+    try:
+        return float(str(v).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _json_load(path, default):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return default
+
+
+def _json_save(path, obj):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, indent=2)
+
+
+def _days(start, end):
+    return [(start + dt.timedelta(days=i)).isoformat() for i in range((end - start).days + 1)]
+
+
+def _short(items, n=6):
+    items = list(items)
+    return ", ".join(items[:n]) + (" ..." if len(items) > n else "")
+
+
+def _report_check(title, warns):
+    if not warns:
+        print(f"\nตรวจ{title}: ✅ ไม่พบความผิดปกติ")
+        return
+    print(f"\nตรวจ{title}: ⚠️ {len(warns)} เรื่อง (ตรวจก่อนใช้ตัวเลข)")
+    for w in warns[:8]:
+        print("  - " + w)
+
+
+def check_records(recs, rows, start, end, key):
+    """ตรวจหลังดึง records - คำนวณจากข้อมูลที่ดึงมาแล้ว ไม่เรียก API เพิ่ม"""
+    warns, today = [], dt.date.today().isoformat()
+    per_day = collections.Counter(str(r.get("date") or "")[:10] for r in recs.values())
+    days = [d for d in _days(start, end) if d < today]
+    zero = [d for d in days if not per_day[d]]
+    if zero and len(zero) < len(days):
+        warns.append(f"ไม่มี record เลย {len(zero)} วัน: {_short(zero)} "
+                     "(วันหยุด / ไม่มีงาน / ข้อมูลหาย - เทียบกับ attendance)")
+    nz = sorted(per_day[d] for d in days if per_day[d])
+    if nz:
+        med = nz[len(nz) // 2]
+        low = [d for d in days if 0 < per_day[d] < med * 0.5]
+        if low:
+            warns.append(f"record น้อยกว่าครึ่งของปกติ (มัธยฐาน {med}/วัน): {_short(low)}")
+    stats_path = os.path.join(STATS_DIR, f"{key}.json")
+    prev = _json_load(stats_path, {})
+    avg = (sum(nz) / len(nz)) if nz else 0
+    if prev.get("avg_per_day") and avg and avg < prev["avg_per_day"] * 0.5:
+        warns.append(f"เฉลี่ย {avg:.0f} record/วัน ต่ำกว่ารอบก่อน ({prev['avg_per_day']:.0f}) เกินครึ่ง")
+    prof = _json_load(os.path.join(PROFILES_DIR, f"{key.split('__')[0]}.json"), {})
+    known = set(prof.get("skus") or [])
+    skus = {r["sku"] for r in rows if r.get("sku")}
+    if known and skus - known:
+        new = sorted(skus - known)
+        warns.append(f"SKU ใหม่ที่ไม่อยู่ใน profile {len(new)} ตัว: {_short(new)} (รัน profile ใหม่)")
+    bad_num = [r for r in rows if r.get("type") == "number" and r.get("value") not in ("", None)
+               and _num(r["value"]) is None]
+    if bad_num:
+        warns.append(f"ช่องตัวเลขมีข้อความ {len(bad_num)} แถว (เช่น '{str(bad_num[0]['value'])[:20]}')")
+    qty = [(_num(r.get("value")), r) for r in rows
+           if r.get("property") in ("quantity", "value") and str(r.get("type", "")).startswith("product")]
+    vals = sorted(v for v, _ in qty if v is not None and v > 0)
+    if len(vals) >= 20:
+        cap = max(50, vals[int(len(vals) * 0.99)] * 3)
+        big = [(v, r) for v, r in qty if v is not None and v > cap]
+        if big:
+            warns.append(f"จำนวนสูงผิดปกติ (> {cap:.0f}) {len(big)} แถว เช่น {big[0][1].get('sku')} = "
+                         f"{big[0][0]:.0f} ({big[0][1].get('date')})")
+    neg = [r for r in rows if r.get("property") == "price" and (_num(r.get("value")) or 0) < 0]
+    if neg:
+        warns.append(f"ราคาติดลบ {len(neg)} แถว")
+    raw_choice = [r for r in rows if r.get("property") == "choice"
+                  and re.fullmatch(r"[\d, ]+", str(r.get("value") or ""))]
+    if raw_choice:
+        warns.append(f"ตัวเลือกที่แปลเป็นข้อความไม่ได้ {len(raw_choice)} แถว (ฟอร์มอาจถูกแก้ - รัน profile ใหม่)")
+    _report_check("ข้อมูล", warns)
+    if nz and end.isoformat() < today:
+        _json_save(stats_path, {"avg_per_day": avg, "range": [start.isoformat(), end.isoformat()],
+                                "updated": dt.datetime.now().isoformat(timespec="seconds")})
+
+
+def check_attendance(flat, start, end):
+    """ตรวจหลังดึง attendance - ไม่เรียก API เพิ่ม"""
+    warns, today = [], dt.date.today().isoformat()
+
+    def day_of(r):
+        t = r.get("stCheckedInTime") or r.get("createdDate") or ""
+        try:
+            return (dt.datetime.fromisoformat(str(t).replace("Z", "+00:00")) + dt.timedelta(hours=7)).date().isoformat()
+        except ValueError:
+            return str(t)[:10]
+    per_day = collections.Counter(day_of(r) for r in flat)
+    days = [d for d in _days(start, end) if d < today]
+    zero = [d for d in days if not per_day[d]]
+    if zero and len(zero) < len(days):
+        warns.append(f"ไม่มีคนเข้างานเลย {len(zero)} วัน: {_short(zero)}")
+    no_out = [r for r in flat if r.get("stCheckedInTime") and not r.get("stCheckedOutTime") and day_of(r) < today]
+    if no_out:
+        warns.append(f"เช็คอินแต่ไม่เช็คเอาท์ {len(no_out)} รายการ")
+    far = [r for r in flat if (_num(r.get("stDiffDistance")) or 0) > 300]
+    if far:
+        warns.append(f"เช็คอินไกลร้านเกิน 300 ม. {len(far)} รายการ")
+    _report_check("การเข้างาน", warns)
+
+
+def cmd_records(args):
+    start, end = dt.date.fromisoformat(args.start), dt.date.fromisoformat(args.end)
+    if end < start:
+        die("--from ต้องไม่เกิน --to")
+    if (end - start).days + 1 > MAX_RANGE_DAYS:
+        die(f"ช่วงวันที่เกิน {MAX_RANGE_DAYS} วัน - แบ่งดึงเป็นหลายครั้ง")
+    s = login()
+    recs, itemmap, products = fetch_records(s, start, end, args.jobs, args.campaign, args.pad)
 
     rows = []
     for r in sorted(recs.values(), key=lambda r: (str(r.get("date")), r.get("id") or 0)):
@@ -1078,8 +1205,153 @@ def cmd_records(args):
     for (c, fm), n in by_form.most_common():
         print(f"  {n:>5} records  {c} / {fm}")
     print(f"\n{len(rows)} แถว (record x คำถาม x SKU x property) -> {path}")
+    if not args.no_check:
+        key = f"{PROFILE}_{ORGANIZATION_ID}" + (f"__{safe.strip('_')}" if safe else "")
+        check_records(recs, rows, start, end, key)
     if args.include_names or args.include_photos:
         print("!! ไฟล์นี้มีข้อมูลส่วนบุคคล/ลิงก์รูป - เก็บในที่ปลอดภัย อย่าส่งต่อโดยไม่ได้รับอนุมัติ")
+
+
+def _price_meaning(samples):
+    """[(sku, qty, price)] -> ('ราคาต่อชิ้น' / 'ยอดรวมบรรทัด' / 'ไม่แน่ใจ ...', จำนวนแถวที่ใช้ตัดสิน)"""
+    unit = collections.defaultdict(list)
+    for sku, q, p in samples:
+        if q == 1:
+            unit[sku].append(p)
+    vote = collections.Counter()
+    for sku, q, p in samples:
+        if q < 2 or not unit.get(sku):
+            continue
+        u = sorted(unit[sku])[len(unit[sku]) // 2]
+        if u and abs(p / q - u) / u < 0.15:
+            vote["ยอดรวมบรรทัด"] += 1
+        elif u and abs(p - u) / u < 0.15:
+            vote["ราคาต่อชิ้น"] += 1
+    if not vote:
+        return "ไม่แน่ใจ (ไม่มีแถวที่ขาย >1 ชิ้นให้เทียบ)", 0
+    top, n = vote.most_common(1)[0]
+    share = n / sum(vote.values())
+    return (top if share >= 0.8 else f"ไม่แน่ใจ ({dict(vote)})"), sum(vote.values())
+
+
+def cmd_profile(args):
+    """วิเคราะห์ว่าโปรเจกต์เก็บข้อมูลอะไร (job / ฟอร์ม / คำถาม / ตัวเลือก / ความหมายราคา) จาก N วันล่าสุด
+    -> ~/.cloudviu/profiles/<บัญชี>_<org>.json + .md (และ PROFILE_<org>.md ใน project ถ้าใส่ --into)"""
+    end = dt.date.fromisoformat(args.to) if args.to else dt.date.today() - dt.timedelta(days=1)
+    start = end - dt.timedelta(days=args.days - 1)
+    s = login()
+    recs, itemmap, products = fetch_records(s, start, end, None, None, pad=2)
+    key = f"{PROFILE}_{ORGANIZATION_ID}"
+    reg_jobs = next((p.get("jobs") for p in (_registry().get(PROFILE) or {}).get("projects", [])
+                     if p.get("id") == ORGANIZATION_ID), None) or job_list(s)
+    att = fetch_attendance_page(s, 1, start.isoformat(), end.isoformat())
+    att_total = (find_pagination(att) or {}).get("total") or len(find_record_list(att)[1] or [])
+
+    used_jobs = collections.Counter(r.get("jobName") for r in recs.values())
+    jobs = []
+    for j in reg_jobs:
+        n = used_jobs.get(j["name"], 0)
+        kind = ("เก็บข้อมูล" if n else "test" if re.search(r"test", j["name"] or "", re.I)
+                else "เช็คอินอย่างเดียว / ไม่ได้ใช้ช่วงนี้")
+        jobs.append({"id": j["id"], "name": j["name"], "records": n, "kind": kind})
+
+    answered = collections.Counter()
+    offtake = collections.defaultdict(list)
+    skus = set()
+    for r in recs.values():
+        for a in r.get("data") or []:
+            if "value" not in a:
+                continue
+            k = f"{r.get('formId')}/{a.get('id')}"
+            answered[k] += 1
+            v = a["value"]
+            q = (itemmap.get(k) or {}).get("data") or {}
+            if str(q.get("type", "")).startswith("product") and isinstance(v, dict):
+                skus.update(v.keys())
+                if q.get("type") == "product-offtake":
+                    for sku, pr in v.items():
+                        if isinstance(pr, dict) and _num(pr.get("quantity")) and _num(pr.get("price")):
+                            offtake[k].append((sku, _num(pr["quantity"]), _num(pr["price"])))
+    forms = collections.OrderedDict()
+    for r in sorted(recs.values(), key=lambda r: (str(r.get("campaignName")), str(r.get("formName")))):
+        f = forms.setdefault(r.get("formId"), {"formId": r.get("formId"), "form": r.get("formName"),
+                                               "campaign": r.get("campaignName"), "job": r.get("jobName"),
+                                               "records": 0, "questions": []})
+        f["records"] += 1
+    asks = []
+    for fid, f in forms.items():
+        for k, it in itemmap.items():
+            if not k.startswith(f"{fid}/"):
+                continue
+            q = it.get("data") or {}
+            ch = ((q.get("option") or {}).get("choices")) or {}
+            row = {"id": k.split("/", 1)[1], "label": q.get("label"), "type": q.get("type"),
+                   "analyticKey": q.get("analyticKey"), "answered": answered.get(k, 0),
+                   "choices": {str(c): str(t) for c, t in ch.items()} if isinstance(ch, dict) else {},
+                   "skus": len(it.get("productSkus") or [])}
+            if q.get("type") == "product-offtake":
+                meaning, _n = (_price_meaning(offtake.get(k, [])) if answered.get(k)
+                               else ("ยังไม่มีข้อมูลช่วงนี้", 0))
+                row["price_meaning"] = meaning
+                if meaning.startswith("ไม่แน่ใจ"):
+                    asks.append(f"ฟอร์ม '{f['form']}' คำถาม '{q.get('label')}': price เป็นราคาต่อชิ้นหรือยอดรวมบรรทัด?")
+            f["questions"].append(row)
+    prof = {"account": PROFILE, "org": ORGANIZATION_ID, "project": DISPLAY_NAME,
+            "window": [start.isoformat(), end.isoformat()], "created": dt.datetime.now().isoformat(timespec="seconds"),
+            "records": len(recs), "attendance": att_total, "jobs": jobs, "forms": list(forms.values()),
+            "skus": sorted(skus), "questions_to_confirm": asks}
+
+    old = _json_load(os.path.join(PROFILES_DIR, f"{key}.json"), {})
+    changes = []
+    if old:
+        def qmap(p):
+            return {(f["formId"], q["id"]): q for f in p.get("forms", []) for q in f.get("questions", [])}
+        oq, nq = qmap(old), qmap(prof)
+        changes += [f"คำถามใหม่: {nq[k]['label']}" for k in nq.keys() - oq.keys()]
+        changes += [f"ตัวเลือกเปลี่ยน: {nq[k]['label']}" for k in nq.keys() & oq.keys()
+                    if nq[k].get("choices") != oq[k].get("choices")]
+        changes += [f"คำถามหาย / ไม่มีคนตอบช่วงนี้: {oq[k]['label']}" for k in oq.keys() - nq.keys()]
+    prof["changes_since_last"] = changes
+    _json_save(os.path.join(PROFILES_DIR, f"{key}.json"), prof)
+
+    lines = [f"# Profile: {DISPLAY_NAME} (org {ORGANIZATION_ID})", "",
+             f"สร้าง {prof['created'][:10]} จากข้อมูล {start} ถึง {end}: {len(recs)} records / เข้างาน {att_total} รายการ",
+             "", "## Job", "| job | ชื่อ | records | ประเภท |", "|---|---|---|---|"]
+    lines += [f"| {j['id']} | {j['name']} | {j['records']} | {j['kind']} |" for j in jobs]
+    lines += ["", "## ฟอร์มและคำถาม"]
+    for f in prof["forms"]:
+        lines += ["", f"### {f['campaign']} / {f['form']} (form {f['formId']}, {f['records']} records, job {f['job']})",
+                  "| คำถาม | ชนิด | ตอบ | หมายเหตุ |", "|---|---|---|---|"]
+        for q in f["questions"]:
+            notes = []
+            if q.get("price_meaning"):
+                notes.append("price = " + q["price_meaning"])
+            if q["choices"]:
+                notes.append("ตัวเลือก: " + " / ".join(f"{c}={t}" for c, t in list(q["choices"].items())[:8]))
+            if q["skus"]:
+                notes.append(f"{q['skus']} SKU")
+            lines.append(f"| {q['label']} | {q['type']} | {q['answered']} | {'; '.join(notes)} |")
+    if asks:
+        lines += ["", "## ❓ ต้องยืนยันกับทีม"] + [f"- {a}" for a in asks]
+    if changes:
+        lines += ["", "## เปลี่ยนจาก profile รอบก่อน"] + [f"- {c}" for c in changes]
+    md = "\n".join(lines) + "\n"
+    paths = [os.path.join(PROFILES_DIR, f"{key}.md")]
+    if INTO and WORKSPACE:
+        paths.append(os.path.join(WORKSPACE, "projects", INTO, f"PROFILE_{ORGANIZATION_ID}.md"))
+    for pth in paths:
+        os.makedirs(os.path.dirname(pth), exist_ok=True)
+        with open(pth, "w", encoding="utf-8") as fh:
+            fh.write(md)
+
+    data_jobs = [f"{j['id']} {j['name']}" for j in jobs if j["records"]]
+    print(f"\n{DISPLAY_NAME}: {len(recs)} records ({len(forms)} ฟอร์ม) / เข้างาน {att_total} รายการ ใน {start}..{end}")
+    print("job เก็บข้อมูล: " + (", ".join(data_jobs) or "- (ไม่มี = โปรเจกต์เช็คอินอย่างเดียว)"))
+    for a in asks:
+        print("❓ " + a)
+    for c in changes:
+        print("Δ " + c)
+    print("profile: " + " | ".join(paths))
 
 
 # ============================== CAMPAIGNS (อ่านอย่างเดียว) ==============================
@@ -1826,8 +2098,14 @@ def main():
     rc.add_argument("--pad", type=int, default=3, help="ดึงเผื่อหลังวันสุดท้ายกี่วัน (คนส่งรายงานย้อนหลัง) ค่าเริ่มต้น 3")
     rc.add_argument("--include-names", action="store_true", help="เก็บชื่อพนักงาน (ใช้เมื่อจำเป็นเท่านั้น)")
     rc.add_argument("--include-photos", action="store_true", help="เก็บลิงก์รูป/พิกัด (ค่าเริ่มต้นเก็บแค่จำนวนรูป)")
+    rc.add_argument("--no-check", action="store_true", help="ไม่ต้องตรวจความผิดปกติหลังดึง")
     rc.add_argument("--out", default=DEFAULT_OUT)
     rc.set_defaults(fn=cmd_records)
+
+    pf = sub.add_parser("profile", help="วิเคราะห์โปรเจกต์: job / ฟอร์ม / คำถาม / ตัวเลือก / ความหมายราคา (ครั้งแรก + เมื่อฟอร์มเปลี่ยน)")
+    pf.add_argument("--days", type=int, default=7, help="ดูย้อนหลังกี่วัน (ค่าเริ่มต้น 7)")
+    pf.add_argument("--to", help="วันสุดท้าย YYYY-MM-DD (ค่าเริ่มต้น เมื่อวาน)")
+    pf.set_defaults(fn=cmd_profile)
 
     c1 = sub.add_parser("campaign", help="meta ของ campaign หนึ่ง (ฟอร์ม/คำถาม) - อ่านอย่างเดียว")
     c1.add_argument("id", type=int)
@@ -1842,10 +2120,11 @@ def main():
     a.add_argument("--include-names", action="store_true", help="เก็บชื่อ/เบอร์/อีเมลพนักงาน (ใช้เมื่อจำเป็นเท่านั้น)")
     a.add_argument("--include-photos", action="store_true", help="เก็บลิงก์รูป (มักเป็นรูปเซลฟี่ใบหน้า - ใช้เมื่อจำเป็นเท่านั้น)")
     a.add_argument("--out", default=DEFAULT_OUT, help=f"โฟลเดอร์ผลลัพธ์ (ค่าเริ่มต้น <repo>/out/{PROJECT})")
+    a.add_argument("--no-check", action="store_true", help="ไม่ต้องตรวจความผิดปกติหลังดึง")
     a.set_defaults(fn=cmd_attendance)
 
     args = p.parse_args()
-    if hasattr(args, "jobs") and not args.jobs and not getattr(args, "xlsx", None) and args.fn is not cmd_records:
+    if hasattr(args, "jobs") and not args.jobs and not getattr(args, "xlsx", None) and args.fn not in (cmd_records, cmd_profile):
         die(f"ยังไม่มีเลข job ของ project '{PROJECT}' - ใส่ \"jobs\" ใน {CFG_PATH} หรือส่ง --jobs <เลข> "
             "(ดูเลขจาก URL ปุ่ม Export: job-record-download?jobIds=...)")
     args.fn(args)

@@ -36,6 +36,26 @@ description: เชื่อม CloudViu แบบอ่านอย่างเ
 3. เมื่อผู้ใช้บอกว่าเสร็จ: `--account <บัญชี> projects --active` แสดงรายการ แล้วถามว่าจะดูโปรเจกต์ไหน
 4. ตรวจความพร้อม: `--account <บัญชี> --org <id> doctor` (Python, keyring, login, job-records, attendance)
 
+## ลำดับการทำงาน (ทำตามนี้ทุก project)
+```
+① login -> ② scan -> ③ profile -> ④ records / attendance -> ⑤ ตรวจอัตโนมัติ -> ⑥ รายงาน
+```
+| ขั้น | เมื่อไร | คำสั่ง |
+|---|---|---|
+| ① login + ② scan | ครั้งแรก / เปลี่ยนรหัส (ผู้ใช้รันเอง) | `--account <บัญชี> login` |
+| ② scan ใหม่ | หาโปรเจกต์ใหม่ไม่เจอ (โปรเจกต์รายเดือน) | `--account <บัญชี> scan` |
+| ③ profile | เปิดโปรเจกต์ครั้งแรก / ตัวเลือกแปลไม่ได้ / มี SKU ใหม่ / ทุกต้นเดือน | `--account <บัญชี> --org <id> --into <ลูกค้า>-<งาน> profile` |
+| ④ ดึงข้อมูล | ทุกครั้ง | `records` / `attendance` (+ `--into`) |
+| ⑤ ตรวจ | อัตโนมัติท้าย ④ (ไม่เรียก API เพิ่ม) | ปิดด้วย `--no-check` |
+
+- **profile** ดูข้อมูล 7 วันล่าสุด: job ไหนเก็บข้อมูล / job ไหนเช็คอินอย่างเดียว, ฟอร์ม -> คำถาม -> ชนิด -> ตัวเลือก (ข้อความจริง),
+  ราคาใน product-offtake เป็นราคาต่อชิ้นหรือยอดรวมบรรทัด, และสิ่งที่เปลี่ยนจาก profile รอบก่อน (ฟอร์มถูกแก้)
+  -> `~/.cloudviu/profiles/<บัญชี>_<org>.md` + `projects/<ลูกค้า>-<งาน>/PROFILE_<org>.md` - สรุปส่วนสำคัญลง NOTES.md
+  **ข้อ ❓ ต้องถามทีมก่อนใช้ตัวเลขนั้น** (เช่น ราคาของโปรโมชั่นที่ระบบเดาไม่ได้)
+- **ตรวจหลังดึง** records: วันที่ไม่มี record, วันที่น้อยผิดปกติ, ค่าเฉลี่ยต่ำกว่ารอบก่อนเกินครึ่ง, SKU ใหม่, ข้อความในช่องตัวเลข,
+  จำนวนสูงผิดปกติ, ราคาติดลบ, ตัวเลือกที่แปลไม่ได้ / attendance: วันที่ไม่มีคนเข้างาน, ไม่เช็คเอาท์, เช็คอินไกลร้านเกิน 300 ม.
+  **ถ้าขึ้น ⚠️ ให้บอกผู้ใช้ก่อนทำรายงาน** อย่าเงียบ
+
 ## ใช้งานประจำ (ทุกคำสั่งใส่ `--account <บัญชี> --org <เลขโปรเจกต์>` และ `--into <ลูกค้า>-<งาน>` เมื่อดึงข้อมูลเข้างาน)
 ```
 python ${CLAUDE_SKILL_DIR}/scripts/cloudviu.py --account <บัญชี> projects --active
@@ -59,8 +79,9 @@ python ${CLAUDE_SKILL_DIR}/scripts/cloudviu.py --account <บัญชี> --org
 | `doctor` | ตรวจ Python / keyring / login / job-records / attendance |
 | `projects [--active]` | โปรเจกต์ที่บัญชีเข้าได้ (id ใช้กับ --org) |
 | `scan` | สแกนโปรเจกต์ + job ใหม่ (เมื่อมีโปรเจกต์รายเดือนใหม่) |
-| `records --from --to [--campaign/--jobs/--pad]` | คำตอบฟอร์ม (job-records API) |
-| `attendance --from --to` | เข้า-ออกงาน (attendance API) |
+| `profile [--days 7]` | วิเคราะห์ job / ฟอร์ม / คำถาม / ตัวเลือก / ความหมายราคา + สิ่งที่เปลี่ยน |
+| `records --from --to [--campaign/--jobs/--pad/--no-check]` | คำตอบฟอร์ม (job-records API) + ตรวจความผิดปกติ |
+| `attendance --from --to [--no-check]` | เข้า-ออกงาน (attendance API) + ตรวจความผิดปกติ |
 | `jobs` / `campaigns [--forms]` | รายการ job / campaign / ฟอร์มของโปรเจกต์ |
 | `forget` | (ผู้ใช้รันเอง) ลบบัญชีออกจากเครื่อง |
 

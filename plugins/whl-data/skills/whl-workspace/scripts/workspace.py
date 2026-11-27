@@ -5,6 +5,7 @@
   python workspace.py new <client>-<project> [--root]  สร้างโฟลเดอร์ project ตามมาตรฐาน
   python workspace.py check [--root]                   ตรวจว่าโครงครบ บอกสิ่งที่ขาด
   python workspace.py list [--root]                    รายชื่อ project
+  python workspace.py add <ไฟล์> <client>-<project>    คัดลอกไฟล์ที่ได้รับเข้า 01_input (ไม่ย้าย ไม่เขียนทับ)
 """
 import argparse
 import datetime as dt
@@ -152,6 +153,41 @@ def cmd_list(a):
         print("  " + n)
 
 
+def cmd_add(a):
+    root = resolve_root(a.root)
+    src = os.path.abspath(a.file)
+    if not os.path.isfile(src):
+        sys.exit(f"ERROR: ไม่พบไฟล์ {src}")
+    pdir = os.path.join(root, "projects", a.project)
+    if not os.path.isdir(pdir):
+        sys.exit(f"ERROR: ไม่มี project {a.project} - สร้างด้วย `new {a.project}` ก่อน")
+    client = a.project.split("-")[0]
+    stem, ext = os.path.splitext(os.path.basename(src))
+    stem = re.sub(r'[\\/:*?"<>|]+', "", stem).strip()
+    stem = re.sub(r"\s+", "-", a.name or stem).strip("-_") or "file"
+    today = dt.date.today().isoformat()
+    has_date = re.search(r"\d{4}-\d{2}-\d{2}", stem)
+    base = stem if stem.lower().startswith(client + "_") else f"{client}_{stem}"
+    base = base if has_date else f"{base}_{today}"
+    dst = os.path.join(pdir, "01_input", base + ext.lower())
+    n = 2
+    while os.path.exists(dst):
+        dst = os.path.join(pdir, "01_input", f"{base}_v{n}{ext.lower()}")
+        n += 1
+    shutil.copy2(src, dst)
+    notes = os.path.join(pdir, "NOTES.md")
+    line = f"- {today}: {os.path.basename(dst)} (ต้นฉบับ: {os.path.basename(src)})"
+    if os.path.exists(notes):
+        with open(notes, encoding="utf-8") as f:
+            txt = f.read()
+        if "## ไฟล์ที่ได้รับ" not in txt:
+            txt = txt.rstrip() + "\n\n## ไฟล์ที่ได้รับ\n"
+        with open(notes, "w", encoding="utf-8") as f:
+            f.write(txt.rstrip() + "\n" + line + "\n")
+    print(f"คัดลอกแล้ว: {dst}")
+    print(f"ต้นฉบับยังอยู่ที่เดิม: {src}")
+
+
 def main():
     p = argparse.ArgumentParser(description="WHL workspace มาตรฐาน")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -163,6 +199,12 @@ def main():
     n.add_argument("name")
     n.add_argument("--root")
     n.set_defaults(fn=cmd_new)
+    ad = sub.add_parser("add")
+    ad.add_argument("file")
+    ad.add_argument("project")
+    ad.add_argument("--name", help="ชื่อเนื้อหาไฟล์ (ไม่ใส่ = ใช้ชื่อเดิม)")
+    ad.add_argument("--root")
+    ad.set_defaults(fn=cmd_add)
     for name, fn in (("check", cmd_check), ("list", cmd_list)):
         s = sub.add_parser(name)
         s.add_argument("--root")

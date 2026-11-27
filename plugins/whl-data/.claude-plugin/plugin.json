@@ -1,7 +1,7 @@
 {
   "name": "whl-data",
   "displayName": "WHL Data",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "เชื่อม CloudViu (job-records + attendance API), Google Sheets/Drive, Apps Script, โครงโฟลเดอร์งานมาตรฐาน และ checklist ตั้งค่าเครื่อง (/whl-data:whl-setup)",
   "author": {
     "name": "Whiteline Activation Data Team"
